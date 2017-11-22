@@ -21,11 +21,6 @@
   (str server (parameterize-path path params)))
 
 ;; pretty much copied from clj-kubernetes-api
-(defn- token [username password]
-  (when (and username password)
-    (str username ":" password)))
-
-;; pretty much copied from clj-kubernetes-api
 (defn- content-type [method]
   (case method
     :patch "application/merge-patch+json"
@@ -59,7 +54,7 @@
       {:connections-per-host 128
        :connection-options {:raw-stream? watch?}}))))
 
-(defn request [{:keys [username password namespace] :as ctx} {:keys [method path params query body kill-ch pool] :as req-opt}]
+(defn request [{:keys [ks kube-token namespace] :as ctx} {:keys [method path params query body kill-ch pool] :as req-opt}]
   (let [;; basic-auth (token username password)
         params     (merge {"namespace" namespace} params)
         watch?     (:watch query)
@@ -67,9 +62,10 @@
         req (http/request
              {:query-params query
               :body (json/write-str body)
-              :headers {"Content-Type" (content-type method)}
+              :headers (cond-> {"Content-Type" (content-type method)}
+                         kube-token (assoc "Authorization" (str "Bearer " kube-token)))
               :pool (or pool (default-connection-pool watch?))
-
+              :trust-store ks
               :method method
               :url (url ctx path params)
 

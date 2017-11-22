@@ -4,12 +4,33 @@
             [taoensso.timbre :as timbre]
             [rube.lens :refer [resource-lens]]
             [rube.api.swagger :as api]
+            [clojure.java.io :as io]
             [com.stuartsierra.component :as component]
-            [rube.request :refer [request watch-request]]))
+            [rube.request :refer [request watch-request]])
+  (:import java.security.KeyStore
+           java.security.cert.CertificateFactory))
 
 (declare watch-init!)
 
-;;(def whitelist #{"jobs"})
+;; Grabbed from https://github.com/arohner/clj-kube/blob/master/src/clj_kube/core.clj
+(defn maybe-kube-token
+  "If we're running inside a pod, find and return the auth-token or nil"
+  []
+  (let [f (io/file "/var/run/secrets/kubernetes.io/serviceaccount/token")]
+    (when (.exists f)
+      (slurp f))))
+
+(defn maybe-local-cacert
+  "If there's a ca.cert an in-pod kubernetes cert, load it into a keystore and return"
+  []
+  (let [f (io/file "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")]
+    (when (.exists f)
+      (let [ks (KeyStore/getInstance (KeyStore/getDefaultType))
+            _ (.load ks nil nil)
+            cf (CertificateFactory/getInstance "X.509")
+            cert (.generateCertificate cf (io/input-stream f))]
+        (.setCertificateEntry ks "local.kubernetes" cert)
+        ks))))
 
 (defrecord KubernetesInformer [server username password namespace whitelist config-path config]
   component/Lifecycle
@@ -20,6 +41,8 @@
           kill-ch (a/chan) ;; Used for canceling in-flight requests
           ctx (or (get-in config config-path) {:server server :username username
                                                :password password :namespace namespace
+                                               :kube-token (maybe-kube-token)
+                                               :ks (maybe-local-cacert)
                                                :whitelist whitelist})
           kube-atom (atom {:context ctx})]
       (timbre/info "Starting Kubernetes Informer")
@@ -131,12 +154,7 @@
           response)))
 
 #_(let [s (component/start (map->KubernetesInformer {:server "http://localhost:8001"
-                                                     :namespace "default"
-
-                                                     :whitelist #{"jobs" "namespaces"}}))]
-    (swap! (:namespaces (::informer s)) assoc-in ["newns" "metadata" "name"] "newns")
-    (println "KEYS: " (keys @(:namespaces (::informer s))))
-    (println (get-in  @(:namespaces (::informer s)) ["newns" "metadata" "name"]))
-    (swap! (:namespaces (::informer s)) dissoc "newns")
-    (println "KEYS2: " (keys @(:namespaces (::informer s))))
+                                                     :namespace "test"
+                                                     :whitelist #{"jobs" "namespaces"}}))
+        informer (::informer s)]
     (component/stop s))
