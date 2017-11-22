@@ -1,6 +1,6 @@
 (ns rube.core
   (:require [clojure.string :as str]
-            [clojure.core.async :as a :refer [<!! timeout <! go-loop]]
+            [clojure.core.async :as a :refer [<!! timeout <! go-loop alts!]]
             [taoensso.timbre :as timbre]
             [rube.lens :refer [resource-lens]]
             [rube.api.swagger :as api]
@@ -62,7 +62,11 @@
     (when-let [kc (get this ::kill-ch)]
       (timbre/info "Stopping in-flight Kubernetes Informer requests")
       (a/close! kc))
-    (dissoc this ::api/resource-map)))
+    (dissoc this
+            ::api/resource-map
+            ::kube-atom
+            ::informer
+            ::kill-ch)))
 
 (defmethod print-method KubernetesInformer
   [v ^java.io.Writer w]
@@ -108,21 +112,18 @@
             (if (> wait max-wait) :gave-up (recur (* 2 wait)))))))
 
 (defn- state-watch-loop! [kube-atom resource-map resource-name watch-ch kill-ch]
-  (go-loop [msg (<! watch-ch)
-            type (get msg "type")
-            object (get msg "object")]
-    (timbre/debug "State update recieved")
-    (if msg
-      (do
-        (swap! kube-atom (update-from-event resource-name (get-in object ["metadata" "name"])
-                                            type
-                                            object))
-        (recur (<! watch-ch)
-               (get msg "type")
-               (get msg "object")))
-      (case (reconnect-or-bust kube-atom resource-map resource-name kill-ch)
-        :connected (timbre/info "Kubernetes Informer reconnected.")
-        :gave-up   (timbre/error "Kubernetes Informer gave up trying to reconnect.")))))
+  (go-loop [v (alts! [kill-ch watch-ch] :priority true)]
+    (let [[msg ch] v]
+      (cond
+        (= ch kill-ch) (timbre/infof "Shutting down state watch loop for resource %s" resource-name)
+        msg (do (swap! kube-atom (update-from-event resource-name
+                                                    (get-in msg ["object" "metadata" "name"])
+                                                    (get msg "type")
+                                                    (get msg "object")))
+                (recur (alts! [kill-ch watch-ch] :priority true)))
+        :else (case (reconnect-or-bust kube-atom resource-map resource-name kill-ch)
+                :connected (timbre/info "Kubernetes Informer reconnected.")
+                :gave-up   (timbre/error "Kubernetes Informer gave up trying to reconnect."))))))
 
 (defn- state-watch-loop-init!
   "Start updating the state with a k8s watch stream. `body` is the response with the current list of items and the `resourceVersion`."
@@ -154,7 +155,9 @@
           response)))
 
 #_(let [s (component/start (map->KubernetesInformer {:server "http://localhost:8001"
-                                                     :namespace "test"
-                                                     :whitelist #{"jobs" "namespaces"}}))
-        informer (::informer s)]
-    (component/stop s))
+                                                   :namespace "test"
+                                                   :whitelist #{"jobs" "namespaces"}}))
+      informer (::informer s)]
+  (swap! (:jobs informer) assoc "mytopic-archiver" (template "mytopic"))
+  (println (ffirst @(:jobs informer)))
+  (component/stop s))
