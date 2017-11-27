@@ -20,34 +20,38 @@
     (when (.exists f)
       (slurp f))))
 
+(defn maybe-kube-namespace
+  []
+  (let [f (io/file "/var/run/secrets/kubernetes.io/serviceaccount/namespace")]
+    (when (.exists f)
+      (slurp f))))
+
 (defn maybe-local-cacert
   "If there's a ca.cert an in-pod kubernetes cert, load it into a keystore and return"
   []
-  (let [f (io/file "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")]
+
+  #_(let [f (io/file "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")]
     (when (.exists f)
-      (let [ks (KeyStore/getInstance (KeyStore/getDefaultType))
-            _ (.load ks nil nil)
-            cf (CertificateFactory/getInstance "X.509")
-            cert (.generateCertificate cf (io/input-stream f))]
-        (.setCertificateEntry ks "local.kubernetes" cert)
-        ks))))
+      (netty/ssl-client-context {:certificate-chain f})))
+  (timbre/warn "Using insecure SSL context")
+  (netty/insecure-ssl-client-context))
 
 (defrecord KubernetesInformer [server username password namespace whitelist config-path config]
   component/Lifecycle
   (start [this]
-    (let [resource-map (cond-> @(api/gen-resource-map server)
-                         whitelist (select-keys whitelist))
-          supported-resources (set (keys resource-map))
-          kill-ch (a/chan) ;; Used for canceling in-flight requests
+    (let [kill-ch (a/chan) ;; Used for canceling in-flight requests
           ctx (or (get-in config config-path) {:server server :username username
-                                               :password password :namespace namespace
+                                               :password password :namespace (or namespace (maybe-kube-namespace))
                                                :kube-token (maybe-kube-token)
                                                :ks (maybe-local-cacert)
                                                :whitelist whitelist})
+          resource-map (cond-> @(api/gen-resource-map ctx)
+                         whitelist (select-keys whitelist))
+          supported-resources (set (keys resource-map))
           kube-atom (atom {:context ctx})]
       (timbre/info "Starting Kubernetes Informer")
       (doseq [resource-name supported-resources]
-        (timbre/debug "Initializing watch for: " resource-name)
+        (timbre/info "Initializing watch for: " resource-name)
         (watch-init! kube-atom resource-map resource-name kill-ch))
       (assoc this
              ::api/resource-map resource-map
@@ -106,7 +110,7 @@
   "Called when the watch channel closes (network problem?)."
   [kube-atom resource-map resource-name kill-ch & {:keys [max-wait] :or {max-wait 8000}}]
   (loop [wait 500]
-    (timbre/debug "Attempting to reconnect...")
+    (timbre/info "Attempting to reconnect...")
     (or (get #{:connected} (watch-init! kube-atom resource-map resource-name kill-ch))
         (do (<!! (timeout wait))
             (if (> wait max-wait) :gave-up (recur (* 2 wait)))))))
@@ -153,11 +157,3 @@
     (case status 200
           (state-watch-loop-init! kube-atom resource-map resource-name body kill-ch)
           response)))
-
-#_(let [s (component/start (map->KubernetesInformer {:server "http://localhost:8001"
-                                                   :namespace "test"
-                                                   :whitelist #{"jobs" "namespaces"}}))
-      informer (::informer s)]
-  (swap! (:jobs informer) assoc "mytopic-archiver" (template "mytopic"))
-  (println (ffirst @(:jobs informer)))
-  (component/stop s))

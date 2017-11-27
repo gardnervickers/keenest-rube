@@ -7,7 +7,7 @@
   :dependencies [[org.clojure/clojure "1.9.0-alpha17" :scope "provided"]
                  [org.clojure/core.async "0.3.442"]
                  [org.clojure/data.json "0.2.6"]
-                 [aleph "0.4.3"]
+                 [aleph "0.4.4"]
                  [com.taoensso/timbre "4.10.0"]
                  [funcool/lentes "1.2.0"]
                  [com.stuartsierra/component "0.3.2"]

@@ -1,6 +1,7 @@
 (ns rube.request
   (:require
    [clojure.data.json :as json]
+   [taoensso.timbre :as timbre]
    [clojure.string :as str]
    [byte-streams :as bs]
    [manifold.stream :as s]
@@ -31,12 +32,17 @@
   Parse the JSON as it arrives and put it on `return-ch`. Exit if `kill-ch` closes."
   [req return-ch kill-ch]
   (let [raw-ch (chan)]
-    (-> req (d/chain :body #(s/filter identity %) #(s/map bs/to-string %)) deref (s/connect raw-ch))
+    (-> req
+        (d/chain
+         :body
+         #(s/filter identity %)
+         #(s/map bs/to-string %))
+        deref
+        (s/connect raw-ch))
     (a/thread
       (loop [buf ""]
         (let [[chunk p] (a/alts!! [raw-ch kill-ch])]
           (when-not (= p kill-ch)
-            ;; if the raw channel closes, close the return channel as well (the whole thing needs to be retried)
             (if (nil? chunk)
               (close! return-ch)
               (if-let [i (str/index-of chunk "\n")]
@@ -49,14 +55,15 @@
 
 (def default-connection-pool
   (memoize
-   (fn [watch?]
+   (fn [watch? ks]
      (http/connection-pool
       {:connections-per-host 128
-       :connection-options {:raw-stream? watch?}}))))
+       :insecure? true
+       :connection-options {:ssl-context ks
+                            :raw-stream? watch?}}))))
 
 (defn request [{:keys [ks kube-token namespace] :as ctx} {:keys [method path params query body kill-ch pool] :as req-opt}]
-  (let [;; basic-auth (token username password)
-        params     (merge {"namespace" namespace} params)
+  (let [params     (merge {"namespace" namespace} params)
         watch?     (:watch query)
         return-ch  (chan)
         req (http/request
@@ -64,8 +71,7 @@
               :body (json/write-str body)
               :headers (cond-> {"Content-Type" (content-type method)}
                          kube-token (assoc "Authorization" (str "Bearer " kube-token)))
-              :pool (or pool (default-connection-pool watch?))
-              :trust-store ks
+              :pool (or pool (default-connection-pool watch? ks))
               :method method
               :url (url ctx path params)
 

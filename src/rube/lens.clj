@@ -2,6 +2,7 @@
   "Make stateful k8s API calls based on changes to local state."
   (:require [lentes.core :as l]
             [clojure.data :as data]
+            [taoensso.timbre :as timbre]
             [clojure.core.match :refer [match]]
             [clojure.core.async :refer [<!!]]
             [rube.request :refer [request]]
@@ -30,6 +31,7 @@
 (defn- replace-one!
   "Do a PUT on an individual resource of kind `k` with name `n`, using its value from next-resource-state."
   [next-resource-state context resource-map k n]
+  (timbre/infof "Replacing existing resource: %s in namespace %s" (str n) (:namespace context))
   (-> next-resource-state
       (resource-update! context
                         {:method :put :path (api/path-pattern-one resource-map (name k))
@@ -56,6 +58,7 @@
 (defn- patch-one!
   "Do a PUT on an individual resource of kind `k` with name `n`, using its value from next-resource-state."
   [next-resource-state context resource-map k n]
+  (timbre/infof "Patching existing resource: %s in namespace %s" (str n) (:namespace context))
   (-> next-resource-state
       (resource-update! context
                         {:method :patch :path (api/path-pattern-one resource-map (name k))
@@ -66,6 +69,7 @@
 (defn- create-one!
   "Do a POST to create a resource of kind `k` with name `n`, using its value from next-resource-state."
   [next-resource-state context resource-map k n]
+  (timbre/infof "Creating resource: %s in namespace %s" (str n) (:namespace context))
   (-> next-resource-state
       (resource-update! context
                         {:method :post :path (api/path-pattern resource-map (name k))
@@ -76,6 +80,7 @@
 (defn- delete-one!
   "Do a DELETE request on a resource of kind `k` with name `n`."
   [resource-state context resource-map k n]
+  (timbre/infof "Deleting resource: %s in namespace %s" (str n) (:namespace context))
   (-> resource-state
       (resource-update! context
                         {:method :delete
@@ -91,7 +96,7 @@
   By design, it only allows updating, creating, or deleting one resource at a time."
   [resource-map k {:as kube-state :keys [context]} f]
   (let [resource-state      (get kube-state k)
-
+        ;; TODO: Try to use rev id to calculate patch vs replace
         next-resource-state (get (update kube-state k f) k)
         [was shall-be still-is] (data/diff resource-state next-resource-state)
         [[resource-name _]] (seq shall-be)
