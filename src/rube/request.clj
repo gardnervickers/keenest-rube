@@ -58,7 +58,7 @@
    (fn [watch? ks]
      (http/connection-pool
       {:connections-per-host 128
-       :insecure? true
+       :insecure? false
        :connection-options {:ssl-context ks
                             :raw-stream? watch?}}))))
 

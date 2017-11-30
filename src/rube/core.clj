@@ -4,15 +4,17 @@
             [taoensso.timbre :as timbre]
             [rube.lens :refer [resource-lens]]
             [rube.api.swagger :as api]
+            [aleph.netty :as netty]
             [clojure.java.io :as io]
             [com.stuartsierra.component :as component]
             [rube.request :refer [request watch-request]])
   (:import java.security.KeyStore
-           java.security.cert.CertificateFactory))
+           java.security.cert.CertificateFactory
+           java.security.cert.X509Certificate
+           io.netty.handler.ssl.SslContextBuilder))
 
 (declare watch-init!)
 
-;; Grabbed from https://github.com/arohner/clj-kube/blob/master/src/clj_kube/core.clj
 (defn maybe-kube-token
   "If we're running inside a pod, find and return the auth-token or nil"
   []
@@ -29,12 +31,16 @@
 (defn maybe-local-cacert
   "If there's a ca.cert an in-pod kubernetes cert, load it into a keystore and return"
   []
-
-  #_(let [f (io/file "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")]
+  #_(netty/insecure-ssl-client-context)
+  (let [f (io/file "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")]
     (when (.exists f)
-      (netty/ssl-client-context {:certificate-chain f})))
-  (timbre/warn "Using insecure SSL context")
-  (netty/insecure-ssl-client-context))
+      (let [cert-type "X.509"
+            file-input-stream (byte-streams/to-input-stream f)
+            cert-factory (CertificateFactory/getInstance cert-type)
+            certificate ^X509Certificate (cast X509Certificate
+                                               (.generateCertificate cert-factory file-input-stream))]
+        (.build (.trustManager (SslContextBuilder/forClient)
+                               (into-array X509Certificate [certificate])))))))
 
 (defrecord KubernetesInformer [server username password namespace whitelist config-path config]
   component/Lifecycle

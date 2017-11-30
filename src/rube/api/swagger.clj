@@ -18,7 +18,7 @@
   (-> (md/chain (http/get (str server "/swagger.json")
                           {:accept "application/json"
                            :ssl-context ks
-                           :pool (http/connection-pool {:insecure? true
+                           :pool (http/connection-pool {:insecure? false
                                                         :connection-options {:ssl-context ks}})
                            :headers (cond-> {"Content-Type" "application/json"}
                                       kube-token (assoc "Authorization" (str "Bearer " kube-token)))})
